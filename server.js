@@ -1,14 +1,22 @@
 const dgram = require('dgram');
 const server = dgram.createSocket('udp4');
-(async function() { 
+(function() { 
     server.on("message", async (localReq, lInfo) => {
         let q = parseDNSPackage(localReq);
-        console.log(q);
+        let response = await getResponsFromUpstreamServer(localReq, '195.19.220.238');
+        //console.log('question:');
+        //console.log(q);
+        //console.log('response:');
+        //console.log(parseDNSPackage(response));
+        server.send(response, 53, '127.0.0.1');
+        //console.log(q);
     });
     server.bind(53, "127.0.0.1");
 
     server.on('listening', async () => { 
         console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`)});
+
+    server.on('error', async (err) => { console.log(err.message); });
            
 }());
 
@@ -42,9 +50,12 @@ function parseDNSPackage(buffer) {
         let qResourseRecord = parseResourseRecord(buffer, currentByteIndex, objEndOffset, true);
         fields.Questions.push(qResourseRecord);
     }
-
+    currentByteIndex = objEndOffset.EndOffset;
+    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Answers', 'ANCOUNT');
+    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Authorities', 'NSCOUNT');
+    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Additionals', 'ARCOUNT');
 
     return fields;
@@ -76,7 +87,7 @@ function parseResourseRecord(buffer, startOffset, objEndOffset = {}, isQuestion)
     currentByteIndex += 2;
 
     if (!isQuestion) {
-        resourseRecord['ttl'] = buffer.readUIntBE(currentByteIndex, 4);
+        resourseRecord['ttl'] = buffer.readUInt32BE(currentByteIndex);
         currentByteIndex += 4;
 
         resourseRecord['rdlength'] = buffer.readUInt16BE(currentByteIndex);
@@ -99,22 +110,37 @@ function readDomainName(buffer, startOffset, objEndOffset = {}) {
     let lengthOctet = initOctet;
     while (lengthOctet > 0) {
         let label;
-        if (lengthOctet > 192) { //then domain name is compressed
-            let pointer = buffer.readUInt16BE(currentByteIndex) - 49152;
+        if (lengthOctet >= 192) { //then domain name is compressed
+            let pointer = buffer.readUInt16BE(currentByteIndex) - 0b1100000000000000;
             let returnValue = {};
-            label.readDomainName(buffer, pointer, returnValue);
-            domain += '.' + label;
+            label = readDomainName(buffer, pointer, returnValue);
+            domain += ('.' + label);
             objEndOffset['EndOffset'] = currentByteIndex + 1;
             break;
         }
         else {
             currentByteIndex++;
             label = buffer.toString('ascii', currentByteIndex, currentByteIndex + lengthOctet);
-            domain += '.' + label;
+            domain += ('.' + label);
             currentByteIndex += lengthOctet;
             lengthOctet = buffer.readUInt8(currentByteIndex);
             objEndOffset['EndOffset'] = currentByteIndex;
         }
     }
     return domain.substring(1);
+}
+
+async function getResponsFromUpstreamServer(request, upstreamServerAddress) {
+    let client = dgram.createSocket('udp4');
+
+    client.on('err', function(e) { throw e; });
+
+    let promise = new Promise((resolve, reject) => {
+        client.on('message', function (msg, rinfo) { 
+            client.close();
+            resolve(msg);
+        });
+        client.send(request, 53, upstreamServerAddress, function(err, bytes) {});
+    }).then((msg) => { return msg });
+    return promise;
 }
