@@ -1,16 +1,39 @@
 const dgram = require('dgram');
 const server = dgram.createSocket('udp4');
-(function() { 
-    server.on("message", async (localReq, lInfo) => {
-        //let q = parseDNSPackage(localReq);
-        let response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
-        server.send(response, lInfo.port, lInfo.address);
-    });
-    server.bind(53, 'localhost');
+const v8 = require('v8');
+const fs = require('fs');
+const readline = require('readline');
 
-    server.on('listening', async () => { 
-        console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`)});           
-}());
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+let cache = null;
+
+if (fs.existsSync('./dump')) {
+    let buf = fs.readFileSync('./dump');
+    cache = v8.deserialize(buf);
+}
+
+
+server.on("message", async (localReq, lInfo) => {
+    let response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
+
+    server.send(response, lInfo.port, lInfo.address);
+});
+server.bind(53, 'localhost');
+server.on('listening',  () => { 
+    console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`);
+    rl.question('Ведите "stop" для завершения работы сервера\n', (answer) => {    
+        if (answer == 'stop') {
+            server.close();
+            let buf = v8.serialize(cache);
+            fs.writeFileSync('./dump');
+            process.exit();
+        }
+      });
+});
 
 function parseDNSPackage(buffer) {
     let fields = {};
@@ -135,4 +158,95 @@ async function getResponsFromUpstreamServer(request, upstreamServerAddress) {
         client.send(request, 53, upstreamServerAddress, function(err, bytes) {});
     }).then((msg) => { return msg });
     return promise;
+}
+
+function getComposeResourseRecord(fields){
+    let buffer = Buffer.alloc(512);
+    let currentByteIndex = 0;
+
+    buffer.writeUInt16BE(fields.ID, currentByteIndex);
+    currentByteIndex += 2;
+
+    let byte2 = 0b00000000;
+    if (fields.QR) {
+        byte2 = 0b10000000;
+    }
+    byte2 = byte2 | (fields.PCODE << 3);
+    if (fields.AA) {
+        byte2 = byte2 | 0b00000100;
+    }
+    if (fields.TC) {
+        byte2 = byte2 | 0b00000010;
+    }
+    if (fields.RD) {
+        byte2 = byte2 | 0b00000001;
+    }
+    buffer.writeUInt8(byte2, currentByteIndex);
+    currentByteIndex++;
+
+    let byte3 = 0b00000000;
+    if (fields.RA){
+        byte3 = byte3 | 0b10000000;
+    }
+    byte3 = byte3 | (fields.Z << 4);
+    byte3 = byte3 | fields.RCODE;
+    buffer.writeUInt8(byte3, currentByteIndex);
+    currentByteIndex++;
+
+    buffer.writeUInt16BE(fields.QDCOUNT, currentByteIndex);
+    currentByteIndex += 2;
+
+    buffer.writeUInt16BE(fields.ANCOUNT, currentByteIndex);
+    currentByteIndex += 2;
+
+    buffer.writeUInt16BE(fields.NSCOUNT, currentByteIndex);
+    currentByteIndex += 2;
+
+    buffer.writeUInt16BE(fields.ARCOUNT, currentByteIndex);
+    currentByteIndex += 2;
+
+    fields.Questions.forEach(question => {
+        let labels = question.domainName.split('.');
+        labels.forEach(label => {
+            let labelLength = label.length;
+            buffer.writeUInt8(labelLength, currentByteIndex);
+            currentByteIndex++;
+            buffer.write(label, currentByteIndex, labelLength, 'ascii');
+            currentByteIndex += labelLength;
+        });
+        buffer.writeUInt8(0, currentByteIndex);
+        currentByteIndex;
+        buffer.writeUInt16BE(question.type, currentByteIndex);
+        currentByteIndex += 2;
+        buffer.writeUInt16BE(question.class, currentByteIndex);
+        currentByteIndex += 2;
+    });
+
+    ['Answers', 'Authorities', 'Additionals'].forEach((section, i, arr) => {
+        if (fields[section]) {
+            fields[section].forEach(sectionItem => {
+                let labels = sectionItem.domainName.split('.');
+                labels.forEach(label => {
+                    let labelLength = label.length;
+                    buffer.writeUInt8(labelLength, currentByteIndex);
+                    currentByteIndex++;
+                    buffer.write(label, currentByteIndex, labelLength, 'ascii');
+                    currentByteIndex += labelLength;
+                });
+                buffer.writeUInt8(0, currentByteIndex);
+                currentByteIndex++;
+                buffer.writeUInt16BE(sectionItem.type, currentByteIndex);
+                currentByteIndex += 2;
+                buffer.writeInt16BE(sectionItem, currentByteIndex);
+                currentByteIndex += 2;
+                buffer.writeInt32BE(sectionItem.ttl, currentByteIndex);
+                currentByteIndex += 4;
+                buffer.writeUInt16BE(sectionItem.rdlength, currentByteIndex);
+                currentByteIndex += 2;
+                sectionItem.rdata.copy(buffer, currentByteIndex, 0, sectionItem.rdata.length);
+                currentByteIndex += sectionItem.rdata.length;
+            });
+        }
+    });
+    return buffer;
 }
