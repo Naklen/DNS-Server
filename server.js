@@ -2,28 +2,20 @@ const dgram = require('dgram');
 const server = dgram.createSocket('udp4');
 (function() { 
     server.on("message", async (localReq, lInfo) => {
-        let q = parseDNSPackage(localReq);
-        let response = await getResponsFromUpstreamServer(localReq, '195.19.220.238');
-        //console.log('question:');
-        //console.log(q);
-        //console.log('response:');
-        //console.log(parseDNSPackage(response));
-        server.send(response, 53, '127.0.0.1');
-        //console.log(q);
+        //let q = parseDNSPackage(localReq);
+        let response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
+        server.send(response, lInfo.port, lInfo.address);
     });
-    server.bind(53, "127.0.0.1");
+    server.bind(53, 'localhost');
 
     server.on('listening', async () => { 
-        console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`)});
-
-    server.on('error', async (err) => { console.log(err.message); });
-           
+        console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`)});           
 }());
 
 function parseDNSPackage(buffer) {
     let fields = {};
 
-    fields['ID'] = buffer.readUInt16BE(0); //ID in header
+    fields['ID'] = buffer.readUInt16BE(0);
 
     let byte2 = buffer.readUInt8(2);
     fields['QR'] = !!(byte2 & 0b10000000); // Q if false, R if true
