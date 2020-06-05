@@ -9,31 +9,97 @@ const rl = readline.createInterface({
     output: process.stdout
   });
 
-let cache = null;
+let cache = {};
 
 if (fs.existsSync('./dump')) {
     let buf = fs.readFileSync('./dump');
     cache = v8.deserialize(buf);
 }
 
-
 server.on("message", async (localReq, lInfo) => {
-    let response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
-
+    let request = parseDNSPackage(localReq);
+    let question = request.Questions[0];
+    let name = question.domainName;
+    let response;
+    let dataToCache = {};
+    if (cache.hasOwnProperty(name)) {
+        let answers = [];
+        for (let i = 0; i < cache[name].length; i++) {
+            if (cache[name][i].type === question.type && Date.now() < cache[name][i].expireIn) {
+                answers.push(cache[name][i].resourseRecord);
+            }
+        }
+        if (answers.length !== 0){
+            let responseFields = {
+                ID: request.ID,
+                QR: true,
+                OPCODE: request.OPCODE,
+                AA: request.AA,
+                TC: false,
+                RD: request.RD,
+                RA: true,
+                Z: request.Z,
+                QDCOUNT: request.QDCOUNT,
+                ANCOUNT: answers.length,
+                NSCOUNT: 0,
+                ARCOUNT: 0,
+                Questions: request.Questions,
+                Answers: answers
+             }
+            response = getComposedDNSPackage(responseFields);
+        }
+        else {
+            response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
+            dataToCache['buffer'] = response;
+        }
+    }
+    else {
+        response = await getResponsFromUpstreamServer(localReq, '8.8.8.8');
+        dataToCache['buffer'] = response;
+    }
     server.send(response, lInfo.port, lInfo.address);
+    updateCache(dataToCache);
 });
+
 server.bind(53, 'localhost');
+
 server.on('listening',  () => { 
     console.log(`Сервер запущен на ${server.address().address}:${server.address().port}`);
     rl.question('Ведите "stop" для завершения работы сервера\n', (answer) => {    
         if (answer == 'stop') {
             server.close();
             let buf = v8.serialize(cache);
-            fs.writeFileSync('./dump');
+            fs.writeFileSync('./dump', buf);
             process.exit();
         }
       });
 });
+
+function updateCache(dataToCache) {
+    for (let name in cache) {
+        for (let i = 0; i < cache[name].length; i++) {
+            if (Date.now() >= cache[name][i].expireIn) {
+                cache[name].splice(i, 1)
+                i--;
+            }
+        }
+        if (cache[name].length === 0)
+            delete cache[name];
+    }
+    if (!isEmpty(dataToCache)) {
+        let parsedData = parseDNSPackage(dataToCache.buffer);
+        for (let i = 0; i < parsedData.Answers.length; i++) {
+            if (!cache.hasOwnProperty(parsedData.Answers[i].domainName)) {
+                cache[parsedData.Answers[i].domainName] = []; 
+            }
+            cache[parsedData.Answers[i].domainName].push({
+                type: parsedData.Answers[i].type,
+                expireIn: Date.now() + (parsedData.Answers[i].ttl * 1000),
+                resourseRecord: parsedData.Answers[i]
+            });
+        }
+    }
+}
 
 function parseDNSPackage(buffer) {
     let fields = {};
@@ -78,7 +144,6 @@ function parseDNSPackage(buffer) {
     function readNonQuestionReqcords(nameOfProperty, lengthProperty) {
         fields[nameOfProperty] = [];
         for (let pCount = 0; pCount < fields[lengthProperty]; pCount++) {
-            currentByteIndex += objEndOffset.EndOffset;
             let resourseRecord = parseResourseRecord(buffer, currentByteIndex, objEndOffset, false);
             fields[nameOfProperty].push(resourseRecord);
         }
@@ -121,7 +186,7 @@ function readDomainName(buffer, startOffset, objEndOffset = {}) {
     initOctet = buffer.readUInt8(currentByteIndex);
     objEndOffset['EndOffset'] = currentByteIndex;
     let domain = '';
-
+    
     let lengthOctet = initOctet;
     while (lengthOctet > 0) {
         let label;
@@ -160,7 +225,7 @@ async function getResponsFromUpstreamServer(request, upstreamServerAddress) {
     return promise;
 }
 
-function getComposeResourseRecord(fields){
+function getComposedDNSPackage(fields){
     let buffer = Buffer.alloc(512);
     let currentByteIndex = 0;
 
@@ -215,7 +280,7 @@ function getComposeResourseRecord(fields){
             currentByteIndex += labelLength;
         });
         buffer.writeUInt8(0, currentByteIndex);
-        currentByteIndex;
+        currentByteIndex++;
         buffer.writeUInt16BE(question.type, currentByteIndex);
         currentByteIndex += 2;
         buffer.writeUInt16BE(question.class, currentByteIndex);
@@ -249,4 +314,11 @@ function getComposeResourseRecord(fields){
         }
     });
     return buffer;
+}
+
+function isEmpty(object) {
+	for (var key in object)
+	    if (object.hasOwnProperty(key)) 
+			return false;
+	return true;
 }
