@@ -132,11 +132,8 @@ function parseDNSPackage(buffer) {
         fields.Questions.push(qResourseRecord);
     }
     currentByteIndex = objEndOffset.EndOffset;
-    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Answers', 'ANCOUNT');
-    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Authorities', 'NSCOUNT');
-    objEndOffset['EndOffset'] = 0;
     readNonQuestionReqcords('Additionals', 'ARCOUNT');
 
     return fields;
@@ -144,6 +141,7 @@ function parseDNSPackage(buffer) {
     function readNonQuestionReqcords(nameOfProperty, lengthProperty) {
         fields[nameOfProperty] = [];
         for (let pCount = 0; pCount < fields[lengthProperty]; pCount++) {
+            currentByteIndex = objEndOffset.EndOffset;
             let resourseRecord = parseResourseRecord(buffer, currentByteIndex, objEndOffset, false);
             fields[nameOfProperty].push(resourseRecord);
         }
